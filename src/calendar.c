@@ -10,6 +10,8 @@
 /*                                                             */
 /***************************************************************/
 
+#define _XOPEN_SOURCE
+
 #include "config.h"
 
 #include <stdio.h>
@@ -20,6 +22,7 @@
 
 #ifdef REM_USE_WCHAR
 #include <wctype.h>
+#include <wchar.h>
 #endif
 
 #include "types.h"
@@ -503,6 +506,44 @@ static int WriteCalendarRow(void)
 
 /***************************************************************/
 /*                                                             */
+/*  GetStrWidth                                                */
+/*                                                             */
+/*  Calculate column width of potential MBCS string.           */
+/*                                                             */
+/***************************************************************/
+static size_t GetStrWidth(char const *s)
+{
+#ifndef REM_USE_WCHAR
+    return strlen(s);
+#else
+    size_t bytes = strlen(s);
+    size_t len = mbstowcs(NULL, s, 0);
+    wchar_t *buf, static_buf[128];
+    
+    if(len == -1)
+        return 0;
+    else if(bytes == len)
+        return len;
+    else if(len+1 <= 128)
+        buf = static_buf;
+    else if(!(buf = calloc(len+1, sizeof(wchar_t))))
+    {
+        fprintf(stderr, "%s\n", ErrMsg[E_NO_MEM]);
+        exit(1);
+    }
+    
+    mbstowcs(buf, s, len+1);
+    len = wcswidth(buf, len);
+    
+    if(buf != static_buf)
+        free(buf);
+    
+    return len;
+#endif
+}
+
+/***************************************************************/
+/*                                                             */
 /*  PrintLeft                                                  */
 /*                                                             */
 /*  Left-justify a piece of text.                              */
@@ -510,9 +551,12 @@ static int WriteCalendarRow(void)
 /***************************************************************/
 static void PrintLeft(char const *s, int width, char pad)
 {
-    int len = strlen(s);
+    size_t len = GetStrWidth(s);
+    
     printf("%s", s);
-    while (len++ < width) PutChar(pad);
+    
+    while(len++ < width)
+        PutChar(pad);
 }
 
 /***************************************************************/
@@ -524,50 +568,24 @@ static void PrintLeft(char const *s, int width, char pad)
 /***************************************************************/
 static void PrintCentered(char const *s, int width, char *pad)
 {
-#ifndef REM_USE_WCHAR
-    int len = strlen(s);
-    int d = (width - len) / 2;
-    int i;
-
-    for (i=0; i<d; i++) fputs(pad, stdout);
-    for (i=0; i<width; i++) {
-	if (*s) PutChar(*s++); else break;
+    size_t len = GetStrWidth(s);
+    size_t i, d = len > width ? 0 : (width - len) / 2;
+    
+    if(!len)
+    {
+        while(len++ < width)
+            fputs(pad, stdout);
+        return;
     }
-    for (i=d+len; i<width; i++) fputs(pad, stdout);
-#else
-    size_t len = mbstowcs(NULL, s, 0);
-    int i;
-    wchar_t static_buf[128];
-    wchar_t *buf;
-    wchar_t *ws;
-    int d;
-
-    if (!len) {
-	for (i=0; i<width; i++) {
-	    fputs(pad, stdout);
-	}
-	return;
-    }
-    if (len + 1 <= 128) {
-	buf = static_buf;
-    } else {
-	buf = calloc(len+1, sizeof(wchar_t));
-	if (!buf) {
-	    /* Uh-oh... cannot recover */
-	    fprintf(stderr, "%s\n", ErrMsg[E_NO_MEM]);
-	    exit(1);
-	}
-    }
-    (void) mbstowcs(buf, s, len+1);
-    d = (width - len) / 2;
-    ws = buf;
-    for (i=0; i<d; i++) fputs(pad, stdout);
-    for (i=0; i<width; i++) {
-	if (*ws) PutWideChar(*ws++); else break;
-    }
-    for (i=d+len; i<width; i++) fputs(pad, stdout);
-    if (buf != static_buf) free(buf);
-#endif
+    
+    for(i=0; i<d; i++)
+        fputs(pad, stdout);
+    
+    while(*s)
+        PutChar(*s++);
+    
+    for(i=d+len; i<width; i++)
+        fputs(pad, stdout);
 }
 
 /***************************************************************/
@@ -611,160 +629,131 @@ static int WriteOneCalLine(void)
 static int WriteOneColLine(int col)
 {
     CalEntry *e = CalColumn[col];
-    char const *s;
-    char const *space;
-
+    char const *s = 0, *space = 0;
+    size_t width = 0;
+    
 #ifdef REM_USE_WCHAR
-    wchar_t const *ws;
-    wchar_t const *wspace;
+    size_t w = 0;
+    wchar_t const *ws = 0, *wspace = 0;
 #endif
-
-    int numwritten = 0;
-
-    /* Print as many characters as possible within the column */
+    
+    /* If we're at the end, and there's another entry, do a blank
+       line and move to next entry. */
 #ifdef REM_USE_WCHAR
-    if (e->wc_text) {
-	wspace = NULL;
-	ws = e->wc_pos;
-
-	/* If we're at the end, and there's another entry, do a blank
-	   line and move to next entry. */
-	if (!*ws && e->next) {
-	    PrintLeft("", ColSpaces, ' ');
-	    CalColumn[col] = e->next;
-	    free((void *)e->text);
-	    free((void *)e->filename);
-	    if (e->wc_text) free((void *)e->wc_text);
-	    free(e);
-	    return 1;
-	}
-
-	/* Find the last space char within the column. */
-	while (ws - e->wc_pos <= ColSpaces) {
-	    if (!*ws) {wspace = ws; break;}
-	    if (iswspace(*ws)) wspace = ws;
-	    ws++;
-	}
-
-	/* Colorize reminder if necessary */
-	if (UseVTColors && e->is_color) {
-	    Colorize(e);
-	}
-
-	/* If we couldn't find a space char, print what we have. */
-	if (!wspace) {
-	    for (ws = e->wc_pos; ws - e->wc_pos < ColSpaces; ws++) {
-		if (!*ws) break;
-		numwritten++;
-		PutWideChar(*ws);
-	    }
-	    e->wc_pos = ws;
-	} else {
-	    /* We found a space - print everything before it. */
-	    for (ws = e->wc_pos; ws<wspace; ws++) {
-		if (!*ws) break;
-		numwritten++;
-		PutWideChar(*ws);
-	    }
-	}
-
-	/* Decolorize reminder if necessary */
-	if (UseVTColors && e->is_color) {
-	    Decolorize();
-	}
-
-	/* Flesh out the rest of the column */
-	while(numwritten++ < ColSpaces) PutChar(' ');
-
-	/* Skip any spaces before next word */
-	while (iswspace(*ws)) ws++;
-
-	/* If done, free memory if no next entry. */
-	if (!*ws && !e->next) {
-	    CalColumn[col] = e->next;
-	    free((void *)e->text);
-	    free((void *)e->filename);
-	    if (e->wc_text) free((void *)e->wc_text);
-	    free(e);
-	} else {
-	    e->wc_pos = ws;
-	}
-	if (CalColumn[col]) return 1; else return 0;
-    } else {
+    if(((e->wc_pos && !*e->wc_pos) || (!e->wc_pos && !*e->pos)) && e->next)
+#else
+    if(!*e->pos && e->next)
 #endif
-	space = NULL;
-	s = e->pos;
-
-	/* If we're at the end, and there's another entry, do a blank
-	   line and move to next entry. */
-	if (!*s && e->next) {
-	    PrintLeft("", ColSpaces, ' ');
-	    CalColumn[col] = e->next;
-	    free((void *)e->text);
-	    free((void *)e->filename);
+    {
+        PrintLeft("", ColSpaces, ' ');
+        CalColumn[col] = e->next;
+        free((void*)e->text);
+        free((void*)e->filename);
 #ifdef REM_USE_WCHAR
-	    if (e->wc_text) free((void *)e->wc_text);
+        if(e->wc_text)
+            free((void *)e->wc_text);
 #endif
-	    free(e);
-	    return 1;
-	}
-
-	/* Find the last space char within the column. */
-	while (s - e->pos <= ColSpaces) {
-	    if (!*s) {space = s; break;}
-	    if (*s == ' ') space = s;
-	    s++;
-	}
-
-	/* Colorize reminder if necessary */
-	if (UseVTColors && e->is_color) {
-	    Colorize(e);
-	}
-
-	/* If we couldn't find a space char, print what we have. */
-	if (!space) {
-	    for (s = e->pos; s - e->pos < ColSpaces; s++) {
-		if (!*s) break;
-		numwritten++;
-		PutChar(*s);
-	    }
-	    e->pos = s;
-	} else {
-	    /* We found a space - print everything before it. */
-	    for (s = e->pos; s<space; s++) {
-		if (!*s) break;
-		numwritten++;
-		PutChar(*s);
-	    }
-	}
-
-	/* Decolorize reminder if necessary */
-	if (UseVTColors && e->is_color) {
-	    Decolorize();
-	}
-
-	/* Flesh out the rest of the column */
-	while(numwritten++ < ColSpaces) PutChar(' ');
-
-	/* Skip any spaces before next word */
-	while (*s == ' ') s++;
-
-	/* If done, free memory if no next entry. */
-	if (!*s && !e->next) {
-	    CalColumn[col] = e->next;
-	    free((void *)e->text);
-	    free((void *)e->filename);
-#ifdef REM_USE_WCHAR
-	    if (e->wc_text) free((void *)e->wc_text);
-#endif
-	    free(e);
-	} else {
-	    e->pos = s;
-	}
-	if (CalColumn[col]) return 1; else return 0;
-#ifdef REM_USE_WCHAR
+        free(e);
+        return 1;
     }
+    
+    /* Find the last space char within the column. */
+#ifdef REM_USE_WCHAR
+    if(e->wc_pos)
+    {
+        for(ws = e->wc_pos, w = 0; *ws; ws++)
+        {
+            if(iswspace(*ws))
+            {
+                wspace = ws;
+                width = w;
+            }
+            if((w += wcwidth(*ws)) > ColSpaces)
+            {
+                w -= wcwidth(*ws);
+                break;
+            }
+        }
+    }
+    else
 #endif
+        for(s = e->pos; *s && s - e->pos < ColSpaces; s++)
+            if(isspace(*s))
+            {
+                space = s;
+                width = s - e->pos;
+            }
+    
+    /* If no space is found or the string fits into ColSpaces
+       position space at end of string
+       or e->pos + ColSpaces whichever comes first. */
+#ifdef REM_USE_WCHAR
+    if(e->wc_pos)
+    {
+        if(!wspace || !*ws)
+        {
+            wspace = ws;
+            width = w;
+        }
+    }
+    else
+#endif
+        if(!space || !*s)
+        {
+            space = s;
+            width = s - e->pos;
+        }
+    
+    /* Colorize reminder if necessary */
+    if(UseVTColors && e->is_color)
+        Colorize(e);
+    
+    /* Print everything until space, end of string or ColSpaces reached */
+#ifdef REM_USE_WCHAR
+    if(e->wc_pos)
+        while(e->wc_pos < wspace)
+            PutWideChar(*e->wc_pos++);
+    else
+#endif
+        while(e->pos < space)
+            PutChar(*e->pos++);
+    
+    /* Decolorize reminder if necessary */
+    if(UseVTColors && e->is_color)
+        Decolorize();
+    
+    /* Flesh out the rest of the column */
+    while(width++ < ColSpaces)
+        PutChar(' ');
+    
+    /* Skip any spaces before next word */
+#ifdef REM_USE_WCHAR
+    if(e->wc_pos)
+        while(iswspace(*e->wc_pos))
+            e->wc_pos++;
+    else
+#endif
+        while(isspace(*e->pos))
+            e->pos++;
+    
+    /* If done, free memory if no next entry. */
+#ifdef REM_USE_WCHAR
+    if(((e->wc_pos && !*e->wc_pos) || (!e->wc_pos && !*e->pos)) && !e->next)
+#else
+    if(!*e->pos && !e->next)
+#endif
+    {
+        CalColumn[col] = e->next;
+        free((void*)e->text);
+        free((void*)e->filename);
+#ifdef REM_USE_WCHAR
+        if(e->wc_text)
+            free((void *)e->wc_text);
+#endif
+        free(e);
+    }
+    
+    return !!CalColumn[col];
 }
 
 /***************************************************************/
