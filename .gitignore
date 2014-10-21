@@ -1,0 +1,8 @@
+Makefile
+!/Makefile
+/config.*
+*.o
+rem2ps
+remind
+/src/version.h
+/src/config.h
