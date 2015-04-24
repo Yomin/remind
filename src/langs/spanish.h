@@ -7,7 +7,7 @@
 /*  Author: Rafa Couto <rafacouto@biogate.com>                 */
 /*                                                             */
 /*  This file is part of REMIND.                               */
-/*  Copyright (C) 1992-1998 by David F. Skoll                  */
+/*  Copyright (C) 1992-1998 by Dianne Skoll                    */
 /*  Copyright 1999-2000 by Roaring Penguin Software Inc.       */
 /*                                                             */
 /***************************************************************/
@@ -42,7 +42,7 @@
 #define L_JUL "Julio"
 #define L_AUG "Agosto"
 #define L_SEP "Septiembre"
-#define L_OCT "Octuber"
+#define L_OCT "Octubre"
 #define L_NOV "Noviembre"
 #define L_DEC "Diciembre"
 
